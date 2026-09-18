@@ -1,0 +1,6 @@
+build/
+Builds/
+.DS_Store
+*.pdb
+*.ilk
+*.lib
