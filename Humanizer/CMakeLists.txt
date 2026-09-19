@@ -2,7 +2,15 @@ cmake_minimum_required(VERSION 3.22)
 
 project(Humanizer VERSION 0.1.0)
 
-add_subdirectory("C:/Users/neoqu/Desktop/Music/plugin/JUCE" JUCE)
+include(FetchContent)
+
+FetchContent_Declare(
+    JUCE
+    GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
+    GIT_TAG 9.0.2
+)
+
+FetchContent_MakeAvailable(JUCE)
 
 juce_add_plugin(Humanizer
     COMPANY_NAME "YourName"
