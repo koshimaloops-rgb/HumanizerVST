@@ -1,5 +1,5 @@
 #pragma once
-
+#include <vector>
 #include <JuceHeader.h>
 
 class HumanizerAudioProcessor : public juce::AudioProcessor
@@ -12,7 +12,13 @@ public:
     void releaseResources() override;
 
     bool isBusesLayoutSupported(const BusesLayout& layouts) const override;
-
+struct NoteData
+{
+    int noteNumber;
+    int velocity;
+    int samplePosition;
+};
+std::vector<NoteData> recentNotes;
     void processBlock(juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
 
     juce::AudioProcessorEditor* createEditor() override;

@@ -7,7 +7,11 @@ HumanizerAudioProcessorEditor::HumanizerAudioProcessorEditor(
       audioProcessor(p)
 {
     setSize(500, 500);
+     addAndMakeVisible(velocityPlaceholder);
     addAndMakeVisible(midiPlaceholder);
+    velocityPlaceholder.setText("No MIDI note played yet", juce::dontSendNotification);
+    velocityPlaceholder.setJustificationType(juce::Justification::centred);
+    velocityPlaceholder.setColour(juce::Label::textColourId, juce::Colours::white);
     midiPlaceholder.setText ("No MIDI note played yet", juce::dontSendNotification);
     midiPlaceholder.setJustificationType (juce::Justification::centred);
     midiPlaceholder.setColour (juce::Label::textColourId, juce::Colours::white);
@@ -40,7 +44,8 @@ addAndMakeVisible(sliderLabelThreshhold);
 sliderLabelThreshhold.setText ("Thresshold Humanize", juce::dontSendNotification);
 sliderLabelThreshhold.setJustificationType (juce::Justification::centred);
 sliderLabelThreshhold.setColour (juce::Label::textColourId, juce::Colours::white);
-
+intervalLabel.setText("Interval: -", juce::dontSendNotification);
+addAndMakeVisible(intervalLabel);
 }
 
 
@@ -70,8 +75,9 @@ void HumanizerAudioProcessorEditor::paint(juce::Graphics& g)
 void HumanizerAudioProcessorEditor::resized()
 {
     midiPlaceholder.setBounds (50, 50, 300, 50); 
+    velocityPlaceholder.setBounds(80,80,350,79);
      sliderLabel.setBounds (75, 450, 100, 20);
-
+intervalLabel.setBounds(20, 120, 200, 30);
     // Der Slider selbst kommt darunter (schön groß, damit man ihn drehen kann)
     velocityHumanizeSlider.setBounds (75, 350, 100, 100);
    threshholdHumanizeSlider.setBounds (350, 350, 100, 100);
@@ -83,4 +89,17 @@ void HumanizerAudioProcessorEditor::resized()
 void HumanizerAudioProcessorEditor::changePlaceholderText (const juce::String& newText)
 {
     midiPlaceholder.setText (newText, juce::dontSendNotification);
+    
+};
+
+
+void HumanizerAudioProcessorEditor::changePlaceholderTextVelocity(const juce::String& newTextVelocity)
+{
+    velocityPlaceholder.setText (newTextVelocity, juce::dontSendNotification);
+    
+}
+void HumanizerAudioProcessorEditor::changeIntervalText(const juce::String& newInterval)
+{
+    intervalLabel.setText("Interval: " + newInterval + " semitones",
+                          juce::dontSendNotification);
 }
