@@ -4,16 +4,15 @@ project(Humanizer VERSION 0.1.0)
 
 include(FetchContent)
 
-FetchContent_Declare(
-    JUCE
-    GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
-    GIT_TAG 9.0.2
-)
 
-FetchContent_MakeAvailable(JUCE)
+
+
+
+add_subdirectory("C:/Users/neoqu/Desktop/Music/plugin/JUCE" JUCE)
+
 
 juce_add_plugin(Humanizer
-    COMPANY_NAME "YourName"
+    COMPANY_NAME "myplugin"
     IS_SYNTH FALSE
     NEEDS_MIDI_INPUT TRUE
     NEEDS_MIDI_OUTPUT TRUE
@@ -23,8 +22,8 @@ juce_add_plugin(Humanizer
     PLUGIN_CODE Huma
     FORMATS VST3 Standalone
     PRODUCT_NAME "Humanizer"
-    VST3_CATEGORIES "Fx"
-    JUCE_VST3_CAN_REPLACE_VST2 TRUE
+   VST3_CATEGORIES "MIDI Effect"
+    
 )
 target_compile_definitions(Humanizer
     PRIVATE
