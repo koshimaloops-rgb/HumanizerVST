@@ -18,7 +18,15 @@ HumanizerAudioProcessorEditor::HumanizerAudioProcessorEditor(
     recentNotesLabel.setText("NO recent notes yet", juce::dontSendNotification);
     recentNotesLabel.setColour(juce::Label::textColourId, juce::Colours::white);
     addAndMakeVisible(recentNotesLabel);
+    ppqPositionLabel.setFont(juce::Font(18.0f));
+    ppqPositionLabel.setColour(
+        juce::Label::textColourId,
+        juce::Colours::white);
 
+    addAndMakeVisible(ppqPositionLabel);
+
+    ppqPositionLabel.setBounds(
+        10, 400, 400, 30);
     addAndMakeVisible(velocityHumanizeSlider);
 
     addAndMakeVisible(threshholdHumanizeSlider);
@@ -47,10 +55,23 @@ HumanizerAudioProcessorEditor::HumanizerAudioProcessorEditor(
         audioProcessor.setVelocityHumanize(
             (float)velocityHumanizeSlider.getValue());
     };
+    threshholdHumanizeSlider.setRange(0.0, 100.0, 1.0);
     threshholdHumanizeSlider.setValue(0.0);
 
-    threshholdHumanizeSlider.setRange(0.0, 100.0, 1.0);
+    threshholdHumanizeSlider.onValueChange = [this]()
+    {
+        audioProcessor.setTimingHumanize(
+            (float)(threshholdHumanizeSlider.getValue() / 100.0));
+    };
+    timingDeviationLabel.setFont(juce::Font(18.0f));
+    timingDeviationLabel.setColour(
+        juce::Label::textColourId,
+        juce::Colours::white);
 
+    addAndMakeVisible(timingDeviationLabel);
+
+    timingDeviationLabel.setBounds(
+        10, 360, 400, 30);
     // --- BONUS: Beschriftung für den Slider ---
     addAndMakeVisible(sliderLabel);
     sliderLabel.setText("Velocity Humanize", juce::dontSendNotification);
@@ -63,6 +84,30 @@ HumanizerAudioProcessorEditor::HumanizerAudioProcessorEditor(
     intervalLabel.setText("Interval: -", juce::dontSendNotification);
     addAndMakeVisible(intervalLabel);
     addAndMakeVisible(durationLabel);
+    addAndMakeVisible(velocityDifferenceLabel);
+
+    addAndMakeVisible(beatDurationLabel);
+
+    beatDurationLabel.setText(
+        "Beat duration: -",
+        juce::dontSendNotification);
+
+    beatDurationLabel.setFont(
+        juce::Font(18.0f));
+
+    beatDurationLabel.setColour(
+        juce::Label::textColourId,
+        juce::Colours::white);
+    velocityDifferenceLabel.setText(
+        "Velocity difference: -",
+        juce::dontSendNotification);
+
+    velocityDifferenceLabel.setFont(
+        juce::Font(18.0f));
+
+    velocityDifferenceLabel.setColour(
+        juce::Label::textColourId,
+        juce::Colours::white);
     addAndMakeVisible(timeBetweenLabel);
 
     timeBetweenLabel.setText(
@@ -108,7 +153,9 @@ void HumanizerAudioProcessorEditor::paint(juce::Graphics &g)
 
 void HumanizerAudioProcessorEditor::resized()
 {
+    beatDurationLabel.setBounds(50, 320, 400, 40);
     timeBetweenLabel.setBounds(50, 240, 400, 40);
+    velocityDifferenceLabel.setBounds(50, 280, 400, 40);
     midiPlaceholder.setBounds(50, 50, 300, 50);
     velocityPlaceholder.setBounds(80, 80, 350, 79);
     durationLabel.setBounds(50, 200, 400, 40);
@@ -118,6 +165,9 @@ void HumanizerAudioProcessorEditor::resized()
     velocityHumanizeSlider.setBounds(75, 350, 100, 100);
     threshholdHumanizeSlider.setBounds(350, 350, 100, 100);
     sliderLabelThreshhold.setBounds(350, 450, 100, 20);
+
+    ppqPositionLabel.setBounds(
+        10, 400, 400, 30);
     recentNotesLabel.setBounds(50, 160, 400, 40);
 
     // AUSSEHEN
@@ -151,6 +201,34 @@ void HumanizerAudioProcessorEditor::changeTimeBetweenText(
     const juce::String &newTime)
 {
     timeBetweenLabel.setText(
-        "Time between: " + newTime + " samples",
+        "Time between: " + newTime + " ms",
+        juce::dontSendNotification);
+}
+void HumanizerAudioProcessorEditor::changeVelocityDifferenceText(
+    const juce::String &newDifference)
+{
+    velocityDifferenceLabel.setText(
+        "Velocity difference: " + newDifference,
+        juce::dontSendNotification);
+}
+void HumanizerAudioProcessorEditor::changeBeatDurationText(
+    const juce::String &newDuration)
+{
+    beatDurationLabel.setText(
+        "Beat duration: " + newDuration + " ms",
+        juce::dontSendNotification);
+}
+void HumanizerAudioProcessorEditor::changeTimingDeviationText(
+    const juce::String &newDeviation)
+{
+    timingDeviationLabel.setText(
+        "Timing deviation: " + newDeviation + " ms",
+        juce::dontSendNotification);
+}
+void HumanizerAudioProcessorEditor::changePpqPositionText(
+    const juce::String &newPosition)
+{
+    ppqPositionLabel.setText(
+        "PPQ position: " + newPosition,
         juce::dontSendNotification);
 }
