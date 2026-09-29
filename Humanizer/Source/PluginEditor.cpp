@@ -188,7 +188,16 @@ void HumanizerAudioProcessorEditor::changeIntervalText(const juce::String &newIn
 }
 void HumanizerAudioProcessorEditor::changeRecentNotesText(const juce::String &newNotes)
 {
-    recentNotesLabel.setText("recent Notes " + newNotes, juce::dontSendNotification);
+    recentNotesLabel.setText("recent Notes " + newNotes,
+                             juce::dontSendNotification);
+}
+
+void HumanizerAudioProcessorEditor::changeVelocityGroupText(
+    const juce::String &newText)
+{
+    recentNotesLabel.setText(
+        newText,
+        juce::dontSendNotification);
 }
 void HumanizerAudioProcessorEditor::changeDurationText(
     const juce::String &newDuration)

@@ -1,6 +1,7 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 #include "strum_patterns.h"
+#include "velocity_patterns.h"
 
 // =============================================================
 // CONSTRUCTOR / DESTRUCTOR
@@ -139,6 +140,288 @@ bool HumanizerAudioProcessor::isBusesLayoutSupported(
 // =============================================================
 // APPLY LEARNED STRUM
 // =============================================================
+void HumanizerAudioProcessor::applyLearnedVelocityToGroup()
+{
+    if (currentGroupEvents.size() < 2)
+        return;
+
+    const int noteCount =
+        static_cast<int>(currentGroupEvents.size());
+
+    if (noteCount > 5)
+        return;
+
+    // --------------------------------------------------------
+    // NACH TONHÖHE SORTIEREN
+    // --------------------------------------------------------
+
+    std::vector<PendingGroupNote> sortedByPitch =
+        currentGroupEvents;
+
+    std::sort(
+        sortedByPitch.begin(),
+        sortedByPitch.end(),
+        [](const PendingGroupNote &a,
+           const PendingGroupNote &b)
+        {
+            return a.message.getNoteNumber() < b.message.getNoteNumber();
+        });
+
+    // --------------------------------------------------------
+    // RICHTUNG BESTIMMEN
+    //
+    // Wir schauen, welche Note zeitlich zuerst kam.
+    // --------------------------------------------------------
+
+    int earliestIndex = 0;
+
+    int64_t earliestSample =
+        currentGroupEvents[0].originalSample;
+
+    for (int i = 1;
+         i < static_cast<int>(currentGroupEvents.size());
+         ++i)
+    {
+        if (currentGroupEvents[i].originalSample < earliestSample)
+        {
+            earliestSample =
+                currentGroupEvents[i].originalSample;
+
+            earliestIndex = i;
+        }
+    }
+
+    const int earliestNote =
+        currentGroupEvents[earliestIndex]
+            .message
+            .getNoteNumber();
+
+    const int lowestNote =
+        sortedByPitch.front()
+            .message
+            .getNoteNumber();
+
+    const int highestNote =
+        sortedByPitch.back()
+            .message
+            .getNoteNumber();
+
+    bool ascending = false;
+
+    bool descending = false;
+
+    if (earliestNote == lowestNote)
+        ascending = true;
+
+    else if (earliestNote == highestNote)
+        descending = true;
+
+    // --------------------------------------------------------
+    // PASSENDE PROFILE SUCHEN
+    // --------------------------------------------------------
+
+    std::vector<
+        const LearnedVelocityProfile *>
+        matchingProfiles;
+
+    for (int i = 0;
+         i < learnedVelocityProfileCount;
+         ++i)
+    {
+        const auto &profile =
+            learnedVelocityProfiles[i];
+
+        if (profile.noteCount != noteCount)
+            continue;
+
+        // Für den Anfang benutzen wir die vorhandenen
+        // ascending/descending Profile.
+        //
+        // Mixed wird später separat behandelt.
+        if (ascending && profile.ascending)
+        {
+            matchingProfiles.push_back(
+                &profile);
+        }
+        else if (descending && !profile.ascending)
+        {
+            matchingProfiles.push_back(
+                &profile);
+        }
+    }
+
+    // --------------------------------------------------------
+    // FALLBACK
+    // --------------------------------------------------------
+
+    if (matchingProfiles.empty())
+    {
+        for (int i = 0;
+             i < learnedVelocityProfileCount;
+             ++i)
+        {
+            const auto &profile =
+                learnedVelocityProfiles[i];
+
+            if (profile.noteCount == noteCount)
+            {
+                matchingProfiles.push_back(
+                    &profile);
+            }
+        }
+    }
+
+    if (matchingProfiles.empty())
+    {
+        return;
+    }
+
+    // --------------------------------------------------------
+    // ZUFÄLLIGES ECHTES PROFIL AUSWÄHLEN
+    // --------------------------------------------------------
+
+    const int randomIndex =
+        juce::Random::getSystemRandom()
+            .nextInt(
+                static_cast<int>(
+                    matchingProfiles.size()));
+
+    const auto *selectedProfile =
+        matchingProfiles[randomIndex];
+
+    // --------------------------------------------------------
+    // HUMANIZE STRENGTH
+    // --------------------------------------------------------
+
+    const float strength =
+        juce::jlimit(
+            0.0f,
+            1.0f,
+            velocityHumanizeAmount);
+
+    // --------------------------------------------------------
+    // DISPLAY
+    //
+    // NICHT VERÄNDERN
+    // --------------------------------------------------------
+
+    juce::String display;
+
+    display << "VELOCITY GROUP\n";
+
+    // --------------------------------------------------------
+    // ECHTES GELERNTES PROFIL ANWENDEN
+    // --------------------------------------------------------
+
+    for (int i = 0;
+         i < noteCount;
+         ++i)
+    {
+        auto &sortedEvent =
+            sortedByPitch[i];
+
+        const int noteNumber =
+            sortedEvent.message.getNoteNumber();
+
+        const int originalVelocity =
+            sortedEvent.message.getVelocity();
+
+        // ----------------------------------------------------
+        // ECHTER GELERNTER OFFSET
+        // ----------------------------------------------------
+
+        const float learnedOffset =
+            selectedProfile->offsets[i];
+
+        const float finalOffset =
+            learnedOffset * strength;
+
+        const int newVelocity =
+            juce::jlimit(
+                1,
+                127,
+                originalVelocity + static_cast<int>(
+                                       std::round(
+                                           finalOffset)));
+
+        // ----------------------------------------------------
+        // DISPLAY — NICHT ÄNDERN
+        // ----------------------------------------------------
+
+        display
+            << juce::MidiMessage::getMidiNoteName(
+                   noteNumber,
+                   true,
+                   true,
+                   4)
+            << "    "
+            << originalVelocity
+            << " -> "
+            << newVelocity
+            << "\n";
+
+        // ----------------------------------------------------
+        // NEUE NOTE
+        // ----------------------------------------------------
+
+        sortedEvent.message =
+            juce::MidiMessage::noteOn(
+                sortedEvent.message.getChannel(),
+                noteNumber,
+                static_cast<juce::uint8>(
+                    newVelocity));
+    }
+
+    // --------------------------------------------------------
+    // MODIFIZIERTE NOTEN ZURÜCKSCHREIBEN
+    // --------------------------------------------------------
+
+    for (int i = 0;
+         i < noteCount;
+         ++i)
+    {
+        const int noteNumber =
+            sortedByPitch[i]
+                .message
+                .getNoteNumber();
+
+        for (auto &originalEvent :
+             currentGroupEvents)
+        {
+            if (originalEvent.message.getNoteNumber() == noteNumber)
+            {
+                originalEvent.message =
+                    sortedByPitch[i].message;
+
+                break;
+            }
+        }
+    }
+
+    // --------------------------------------------------------
+    // GUI
+    // --------------------------------------------------------
+
+    velocityGroupDisplay =
+        display;
+
+    const juce::String displayCopy =
+        display;
+
+    juce::MessageManager::callAsync(
+        [this, displayCopy]()
+        {
+            if (auto *editor =
+                    dynamic_cast<
+                        HumanizerAudioProcessorEditor *>(
+                        getActiveEditor()))
+            {
+                editor->changeVelocityGroupText(
+                    displayCopy);
+            }
+        });
+}
+
 
 void HumanizerAudioProcessor::applyLearnedStrumToGroup()
 {
@@ -158,7 +441,6 @@ void HumanizerAudioProcessor::applyLearnedStrumToGroup()
                  event.originalSample});
         }
 
-        // Eventuelle zurückgehaltene Note-Offs
         for (const auto &noteOff : pendingGroupNoteOffs)
         {
             pendingMidiEvents.push_back(
@@ -171,6 +453,12 @@ void HumanizerAudioProcessor::applyLearnedStrumToGroup()
 
         return;
     }
+
+    // =====================================================
+    // LEARNED VELOCITY
+    // =====================================================
+
+    applyLearnedVelocityToGroup();
 
     // =====================================================
     // NOTE COUNT
@@ -349,7 +637,7 @@ void HumanizerAudioProcessor::applyLearnedStrumToGroup()
 
         // Gelernte Position skalieren
         const float finalBeatPosition =
-            learnedBeatPosition * intensity * 5.0f *  strumVariation;
+            learnedBeatPosition * intensity * 5.0f * strumVariation;
 
         const double strumOffsetMs =
             static_cast<double>(
@@ -540,9 +828,10 @@ void HumanizerAudioProcessor::processBlock(
             // ---------------------------------------------
             // GROUP DETECTION
             // ---------------------------------------------
-
+            const int64_t groupWindowSamples =
+                static_cast<int64_t>(getSampleRate() * 0.030);
             if (groupStartSample == -1 ||
-                absoluteSample - groupStartSample > 900)
+                absoluteSample - groupStartSample > groupWindowSamples)
             {
                 if (!currentGroupEvents.empty())
                 {
@@ -971,7 +1260,10 @@ bool HumanizerAudioProcessor::hasEditor() const
 {
     return true;
 }
-
+juce::String HumanizerAudioProcessor::getVelocityGroupDisplay() const
+{
+    return velocityGroupDisplay;
+}
 juce::AudioProcessorEditor *
 HumanizerAudioProcessor::createEditor()
 {

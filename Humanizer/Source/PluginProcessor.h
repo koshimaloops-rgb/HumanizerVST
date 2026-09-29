@@ -112,6 +112,7 @@ public:
     void applyLearnedStrumToGroup();
     void setTimingHumanize(
         float amount);
+    void applyLearnedVelocityToGroup();
 
     void setStrumIntensity(
         float amount);
@@ -130,7 +131,15 @@ public:
         juce::MidiMessage message;
         int64_t originalSample;
     };
+    juce::String getVelocityGroupDisplay() const;
+    enum class VelocityDirection
+    {
+        ascending,
+        descending,
+        mixed
+    };
 
+   
     std::vector<PendingGroupNoteOff> pendingGroupNoteOffs;
 
     // =========================================================
@@ -141,7 +150,8 @@ private:
     // =========================================================
     // HUMANIZATION VALUES
     // =========================================================
-
+    juce::String velocityGroupDisplay;
+    
     float velocityHumanizeAmount = 0.0f;
 
     float timingHumanizeAmount = 0.0f;

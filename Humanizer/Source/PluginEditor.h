@@ -18,13 +18,14 @@ public:
     void changeDurationText(const juce::String &newDuration);
     void changeVelocityDifferenceText(const juce::String &newDifference);
     void changeTimeBetweenText(const juce::String &newTime);
+    void changeVelocityGroupText(const juce::String &newText);
     void changeBeatDurationText(const juce::String &newDuration);
     void changeTimingDeviationText(const juce::String &newDeviation);
     void changePpqPositionText(const juce::String &newPosition);
 
 private:
     HumanizerAudioProcessor &audioProcessor;
-    
+
     juce::Label recentNotesLabel;
     juce::Label timeBetweenLabel;
     juce::Label durationLabel;
