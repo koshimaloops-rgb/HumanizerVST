@@ -1,260 +1,126 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include <atomic>
+#include <utility>
 #include <vector>
-#include <algorithm>
-#include <cstdint>
+
+#include "HumanizerCore.h"
 
 // =============================================================
-// PENDING MIDI EVENT
+// Parameter-IDs (gleiche Strings in Processor und Editor)
 // =============================================================
 
-struct PendingMidiEvent
+namespace HumanizerParams
 {
-    juce::MidiMessage message;
-    int64_t targetSample;
+static constexpr const char *amount = "amount";       // 0..1.5 (Master: skaliert alle Humanize-Regler)
+static constexpr const char *soft = "soft";           // 0..1   (leise, komprimierte Spielweise)
+static constexpr const char *bass = "bass";           // 0..1   (tiefe Noten leiser)
+static constexpr const char *strum = "strum";         // 0..3   (1 = gelernte Strum-Breite)
+static constexpr const char *velocity = "velocity";   // 0..2   (1 = gelernte Velocity-Profile)
+static constexpr const char *timing = "timing";       // 0..1   (zufaellige Verzoegerung)
+static constexpr const char *accent = "accent";       // 0..1   (Betonung nach Taktposition)
+static constexpr const char *contour = "contour";     // 0..1   (Velocity folgt der Melodie)
+static constexpr const char *groove = "groove";       // 0..1   (Swing/Laid-back auf Off-Beats)
+static constexpr const char *length = "length";       // 0..1   (Notenlaenge / Legato variieren)
+static constexpr const char *window = "window";       // 5..60 ms (Akkord-Erkennung)
+static constexpr const char *direction = "direction"; // Auto / Low to High / High to Low / Alternate
+static constexpr const char *bypass = "bypass";
+} // namespace HumanizerParams
+
+// Daten fuer die Anzeige im Editor (werden im Message-Thread gebaut)
+struct HumanizerMonitor
+{
+    juce::String lastNote;
+    juce::String lastVelocity;
+    juce::String interval;
+    juce::String deltaMs;
+    juce::String deltaVelocity;
+    juce::String recent;
+    double bpm = 0.0; // 0 = unbekannt
 };
 
 // =============================================================
 // HUMANIZER AUDIO PROCESSOR
+//
+// Duenner JUCE-Wrapper um hz::HumanizerCore.
+//  - Alle Regler sind echte Parameter (automatisierbar, werden mit
+//    dem Projekt gespeichert)
+//  - processBlock: MidiBuffer -> Kern -> MidiBuffer, ohne Allokation
+//  - Anzeige: der Audio-Thread schreibt nur in lock-free Ringe, ein
+//    Timer (Message-Thread) liest sie und fuettert den Editor
 // =============================================================
 
 class HumanizerAudioProcessor
-    : public juce::AudioProcessor
+    : public juce::AudioProcessor,
+      private juce::Timer
 {
 public:
-    // =========================================================
-    // CONSTRUCTOR / DESTRUCTOR
-    // =========================================================
-
     HumanizerAudioProcessor();
-
     ~HumanizerAudioProcessor() override;
 
-    // =========================================================
-    // BASIC AUDIO PROCESSOR FUNCTIONS
-    // =========================================================
-
+    // ---- AudioProcessor ----------------------------------------
     const juce::String getName() const override;
-
     bool acceptsMidi() const override;
-
     bool producesMidi() const override;
-
     bool isMidiEffect() const override;
-
     double getTailLengthSeconds() const override;
 
-    // =========================================================
-    // PROGRAMS
-    // =========================================================
-
     int getNumPrograms() override;
-
     int getCurrentProgram() override;
-
     void setCurrentProgram(int index) override;
+    const juce::String getProgramName(int index) override;
+    void changeProgramName(int index, const juce::String &newName) override;
 
-    const juce::String getProgramName(
-        int index) override;
-
-    void changeProgramName(
-        int index,
-        const juce::String &newName) override;
-
-    // =========================================================
-    // AUDIO
-    // =========================================================
-
-    void prepareToPlay(
-        double sampleRate,
-        int samplesPerBlock) override;
-
+    void prepareToPlay(double sampleRate, int samplesPerBlock) override;
     void releaseResources() override;
+    bool isBusesLayoutSupported(const BusesLayout &layouts) const override;
 
-    bool isBusesLayoutSupported(
-        const BusesLayout &layouts) const override;
-
-    // =========================================================
-    // PROCESS MIDI
-    // =========================================================
-
-    void processBlock(
-        juce::AudioBuffer<float> &,
-        juce::MidiBuffer &) override;
-
-    // =========================================================
-    // EDITOR
-    // =========================================================
+    void processBlock(juce::AudioBuffer<float> &, juce::MidiBuffer &) override;
 
     bool hasEditor() const override;
+    juce::AudioProcessorEditor *createEditor() override;
 
-    juce::AudioProcessorEditor *
-    createEditor() override;
+    void getStateInformation(juce::MemoryBlock &destData) override;
+    void setStateInformation(const void *data, int sizeInBytes) override;
 
-    // =========================================================
-    // STATE
-    // =========================================================
-
-    void getStateInformation(
-        juce::MemoryBlock &destData) override;
-
-    void setStateInformation(
-        const void *data,
-        int sizeInBytes) override;
-
-    // =========================================================
-    // HUMANIZATION SETTINGS
-    // =========================================================
-
-    void setVelocityHumanize(
-        float amount);
-    void applyLearnedStrumToGroup();
-    void setTimingHumanize(
-        float amount);
-    void applyLearnedVelocityToGroup();
-
-    void setStrumIntensity(
-        float amount);
-
-    // =========================================================
-    // LEARNED STRUM
-    // =========================================================
-
-    struct PendingGroupNote
-    {
-        juce::MidiMessage message;
-        int64_t originalSample;
-    };
-    struct PendingGroupNoteOff
-    {
-        juce::MidiMessage message;
-        int64_t originalSample;
-    };
-    juce::String getVelocityGroupDisplay() const;
-    enum class VelocityDirection
-    {
-        ascending,
-        descending,
-        mixed
-    };
-
-   
-    std::vector<PendingGroupNoteOff> pendingGroupNoteOffs;
-
-    // =========================================================
-    // PUBLIC
-    // =========================================================
+    // ---- Parameter -------------------------------------------------
+    juce::AudioProcessorValueTreeState apvts;
+    static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
 private:
-    // =========================================================
-    // HUMANIZATION VALUES
-    // =========================================================
-    juce::String velocityGroupDisplay;
-    
-    float velocityHumanizeAmount = 0.0f;
+    void timerCallback() override;
 
-    float timingHumanizeAmount = 0.0f;
+    hz::HumanizerCore core;
 
-    // 0.0 = kein Strum
-    // 1.0 = gelerntes normales Strum
-    // 2.0 = doppelt so stark
+    // Rohwerte der Parameter (atomar, vom Audio-Thread gelesen)
+    std::atomic<float> *pAmount = nullptr;
+    std::atomic<float> *pSoft = nullptr;
+    std::atomic<float> *pBass = nullptr;
+    std::atomic<float> *pStrum = nullptr;
+    std::atomic<float> *pVelocity = nullptr;
+    std::atomic<float> *pTiming = nullptr;
+    std::atomic<float> *pAccent = nullptr;
+    std::atomic<float> *pContour = nullptr;
+    std::atomic<float> *pGroove = nullptr;
+    std::atomic<float> *pLength = nullptr;
+    std::atomic<float> *pWindow = nullptr;
+    std::atomic<float> *pDirection = nullptr;
+    std::atomic<float> *pBypass = nullptr;
 
-    float strumIntensity = 1.0f;
-    double beatDurationMs = 60000.0 / 130.0;
+    // Arbeitspuffer, einmal im Konstruktor reserviert
+    std::vector<hz::NoteEvent> inBuf;
+    std::vector<std::pair<juce::MidiMessage, int>> passthrough;
 
-    // =========================================================
-    // SAMPLE / TIMING
-    // =========================================================
+    // Tempo fuer die Anzeige (Audio-Thread schreibt, Timer liest), 0 = unbekannt
+    std::atomic<double> hostBpm{0.0};
 
-    int64_t totalSamples = 0;
+    // --- nur Message-Thread ---
+    std::vector<hz::NoteInfo> recentNotes; // letzte 8 Noten
+    HumanizerMonitor monitor;
+    double shownBpm = -1.0;
 
-    // =========================================================
-    // GROUP SYSTEM
-    // =========================================================
-
-    int64_t groupStartSample = -1;
-
-    int64_t currentGroupId = 0;
-
-    juce::String currentGroupNotes;
-
-    // =========================================================
-    // CURRENT STRUM GROUP
-    // =========================================================
-
-    std::vector<PendingGroupNote>
-        currentGroupEvents;
-
-    // =========================================================
-    // HUMANIZED GROUP TIMING
-    // =========================================================
-
-    int64_t currentHumanizedGroupId = -1;
-
-    float currentGroupTimingOffsetMs = 0.0f;
-
-    float currentNoteTimingOffsetMs = 0.0f;
-
-    // =========================================================
-    // HELD NOTES
-    // =========================================================
-
-    std::vector<int>
-        heldNotes;
-
-    // =========================================================
-    // RECENT NOTE DATA
-    // =========================================================
-
-    struct RecentNote
-    {
-        int noteNumber = 0;
-
-        int velocity = 0;
-
-        int samplePosition = 0;
-
-        int64_t absoluteSample = 0;
-
-        int64_t noteOffSample = -1;
-
-        int64_t duration = 0;
-
-        int groupId = 0;
-    };
-
-    std::vector<RecentNote>
-        recentNotes;
-
-    // =========================================================
-    // PENDING MIDI OUTPUT
-    // =========================================================
-
-    std::vector<PendingMidiEvent>
-        pendingMidiEvents;
-
-    struct NoteTimingShift
-    {
-        int noteNumber = 0;
-        int64_t noteOnOriginalSample = 0;
-        int64_t offsetSamples = 0;
-    };
-
-    std::vector<NoteTimingShift> noteTimingShifts;
-
-    // =========================================================
-    // JUCE
-    // =========================================================
-
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(
-        HumanizerAudioProcessor)
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(HumanizerAudioProcessor)
 };
 
-// =============================================================
-// PLUGIN CREATOR
-// =============================================================
-
-juce::AudioProcessor *
-    JUCE_CALLTYPE
-    createPluginFilter();
+juce::AudioProcessor *JUCE_CALLTYPE createPluginFilter();

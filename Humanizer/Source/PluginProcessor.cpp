@@ -1,732 +1,165 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
-#include "strum_patterns.h"
-#include "velocity_patterns.h"
+
+// =============================================================
+// PARAMETER
+// =============================================================
+
+juce::AudioProcessorValueTreeState::ParameterLayout
+HumanizerAudioProcessor::createParameterLayout()
+{
+    using namespace juce;
+
+    const auto percent = [](float v, int)
+    { return String(roundToInt(v * 100.0f)) + " %"; };
+    const auto fromPercent = [](const String &t)
+    { return t.getFloatValue() / 100.0f; };
+    const auto millis = [](float v, int)
+    { return String(roundToInt(v)) + " ms"; };
+    const auto fromMillis = [](const String &t)
+    { return t.getFloatValue(); };
+
+    const auto pctAttr = [&]()
+    {
+        return AudioParameterFloatAttributes()
+            .withStringFromValueFunction(percent)
+            .withValueFromStringFunction(fromPercent);
+    };
+
+    AudioProcessorValueTreeState::ParameterLayout layout;
+
+    layout.add(std::make_unique<AudioParameterFloat>(
+        ParameterID{HumanizerParams::amount, 1}, "Humanize",
+        NormalisableRange<float>(0.0f, 1.5f, 0.01f), 1.0f, pctAttr()));
+
+    layout.add(std::make_unique<AudioParameterFloat>(
+        ParameterID{HumanizerParams::soft, 1}, "Soft",
+        NormalisableRange<float>(0.0f, 1.0f, 0.01f), 0.0f, pctAttr()));
+
+    layout.add(std::make_unique<AudioParameterFloat>(
+        ParameterID{HumanizerParams::bass, 1}, "Bass",
+        NormalisableRange<float>(0.0f, 1.0f, 0.01f), 0.5f, pctAttr()));
+
+    layout.add(std::make_unique<AudioParameterFloat>(
+        ParameterID{HumanizerParams::strum, 1}, "Strum",
+        NormalisableRange<float>(0.0f, 3.0f, 0.01f), 1.0f, pctAttr()));
+
+    layout.add(std::make_unique<AudioParameterFloat>(
+        ParameterID{HumanizerParams::velocity, 1}, "Velocity",
+        NormalisableRange<float>(0.0f, 2.0f, 0.01f), 1.0f, pctAttr()));
+
+    layout.add(std::make_unique<AudioParameterFloat>(
+        ParameterID{HumanizerParams::timing, 1}, "Timing",
+        NormalisableRange<float>(0.0f, 1.0f, 0.01f), 0.35f, pctAttr()));
+
+    layout.add(std::make_unique<AudioParameterFloat>(
+        ParameterID{HumanizerParams::groove, 1}, "Groove",
+        NormalisableRange<float>(0.0f, 1.0f, 0.01f), 0.25f, pctAttr()));
+
+    layout.add(std::make_unique<AudioParameterFloat>(
+        ParameterID{HumanizerParams::accent, 1}, "Accent",
+        NormalisableRange<float>(0.0f, 1.0f, 0.01f), 0.4f, pctAttr()));
+
+    layout.add(std::make_unique<AudioParameterFloat>(
+        ParameterID{HumanizerParams::contour, 1}, "Contour",
+        NormalisableRange<float>(0.0f, 1.0f, 0.01f), 0.3f, pctAttr()));
+
+    layout.add(std::make_unique<AudioParameterFloat>(
+        ParameterID{HumanizerParams::length, 1}, "Length",
+        NormalisableRange<float>(0.0f, 1.0f, 0.01f), 0.3f, pctAttr()));
+
+    layout.add(std::make_unique<AudioParameterFloat>(
+        ParameterID{HumanizerParams::window, 1}, "Chord Window",
+        NormalisableRange<float>(5.0f, 60.0f, 1.0f), 25.0f,
+        AudioParameterFloatAttributes()
+            .withStringFromValueFunction(millis)
+            .withValueFromStringFunction(fromMillis)));
+
+    layout.add(std::make_unique<AudioParameterChoice>(
+        ParameterID{HumanizerParams::direction, 1}, "Direction",
+        StringArray{"Auto", "Low to High", "High to Low", "Alternate"}, 0));
+
+    layout.add(std::make_unique<AudioParameterBool>(
+        ParameterID{HumanizerParams::bypass, 1}, "Bypass", false));
+
+    return layout;
+}
 
 // =============================================================
 // CONSTRUCTOR / DESTRUCTOR
 // =============================================================
 
 HumanizerAudioProcessor::HumanizerAudioProcessor()
+    : apvts(*this, nullptr, "HUMANIZER", createParameterLayout())
 {
+    pAmount = apvts.getRawParameterValue(HumanizerParams::amount);
+    pSoft = apvts.getRawParameterValue(HumanizerParams::soft);
+    pBass = apvts.getRawParameterValue(HumanizerParams::bass);
+    pStrum = apvts.getRawParameterValue(HumanizerParams::strum);
+    pVelocity = apvts.getRawParameterValue(HumanizerParams::velocity);
+    pTiming = apvts.getRawParameterValue(HumanizerParams::timing);
+    pAccent = apvts.getRawParameterValue(HumanizerParams::accent);
+    pContour = apvts.getRawParameterValue(HumanizerParams::contour);
+    pGroove = apvts.getRawParameterValue(HumanizerParams::groove);
+    pLength = apvts.getRawParameterValue(HumanizerParams::length);
+    pWindow = apvts.getRawParameterValue(HumanizerParams::window);
+    pDirection = apvts.getRawParameterValue(HumanizerParams::direction);
+    pBypass = apvts.getRawParameterValue(HumanizerParams::bypass);
+
+    inBuf.resize(hz::kMaxIn);
+    passthrough.reserve(1024);
+    recentNotes.reserve(16);
+
+    startTimerHz(30);
 }
 
 HumanizerAudioProcessor::~HumanizerAudioProcessor()
 {
+    stopTimer();
 }
 
 // =============================================================
 // BASIC INFO
 // =============================================================
 
-const juce::String HumanizerAudioProcessor::getName() const
+const juce::String HumanizerAudioProcessor::getName() const { return "Humanizer"; }
+bool HumanizerAudioProcessor::acceptsMidi() const { return true; }
+bool HumanizerAudioProcessor::producesMidi() const { return true; }
+bool HumanizerAudioProcessor::isMidiEffect() const { return true; }
+double HumanizerAudioProcessor::getTailLengthSeconds() const { return 0.0; }
+
+int HumanizerAudioProcessor::getNumPrograms() { return 1; }
+int HumanizerAudioProcessor::getCurrentProgram() { return 0; }
+void HumanizerAudioProcessor::setCurrentProgram(int) {}
+const juce::String HumanizerAudioProcessor::getProgramName(int) { return {}; }
+void HumanizerAudioProcessor::changeProgramName(int, const juce::String &) {}
+
+bool HumanizerAudioProcessor::hasEditor() const { return true; }
+
+juce::AudioProcessorEditor *HumanizerAudioProcessor::createEditor()
 {
-    return "Humanizer";
+    return new HumanizerAudioProcessorEditor(*this);
 }
 
-bool HumanizerAudioProcessor::acceptsMidi() const
+bool HumanizerAudioProcessor::isBusesLayoutSupported(const BusesLayout &) const
 {
     return true;
 }
 
-bool HumanizerAudioProcessor::producesMidi() const
-{
-    return true;
-}
-
-bool HumanizerAudioProcessor::isMidiEffect() const
-{
-    return true;
-}
-
-double HumanizerAudioProcessor::getTailLengthSeconds() const
-{
-    return 0.0;
-}
-
-int HumanizerAudioProcessor::getNumPrograms()
-{
-    return 1;
-}
-
-int HumanizerAudioProcessor::getCurrentProgram()
-{
-    return 0;
-}
-
-void HumanizerAudioProcessor::setCurrentProgram(int index)
-{
-}
-
-const juce::String HumanizerAudioProcessor::getProgramName(int index)
-{
-    return {};
-}
-
-void HumanizerAudioProcessor::changeProgramName(
-    int index,
-    const juce::String &newName)
-{
-}
-
 // =============================================================
-// PREPARE
+// PREPARE / RELEASE
 // =============================================================
 
-void HumanizerAudioProcessor::prepareToPlay(
-    double sampleRate,
-    int samplesPerBlock)
+void HumanizerAudioProcessor::prepareToPlay(double sampleRate, int /*samplesPerBlock*/)
 {
-    totalSamples = 0;
-
-    groupStartSample = -1;
-
-    currentGroupId = 0;
-
-    currentHumanizedGroupId = -1;
-
-    currentGroupTimingOffsetMs = 0.0f;
-
-    currentNoteTimingOffsetMs = 0.0f;
-
-    currentGroupEvents.clear();
-
-    pendingMidiEvents.clear();
-
-    heldNotes.clear();
-
-    recentNotes.clear();
+    // setzt den Kern zurueck; noch klingende Noten bekommen im ersten
+    // Block ein Note-Off, damit nichts haengen bleibt
+    core.prepare(sampleRate);
 }
-
-// =============================================================
-// HUMANIZE SETTINGS
-// =============================================================
-
-void HumanizerAudioProcessor::setVelocityHumanize(float amount)
-{
-    velocityHumanizeAmount = amount;
-}
-
-void HumanizerAudioProcessor::setTimingHumanize(float amount)
-{
-    timingHumanizeAmount =
-        juce::jlimit(0.0f, 1.0f, amount);
-}
-
-void HumanizerAudioProcessor::setStrumIntensity(float amount)
-{
-    strumIntensity =
-        juce::jlimit(0.0f, 1.0f, amount);
-}
-
-// =============================================================
-// RELEASE
-// =============================================================
 
 void HumanizerAudioProcessor::releaseResources()
 {
-}
-
-// =============================================================
-// BUS LAYOUT
-// =============================================================
-
-bool HumanizerAudioProcessor::isBusesLayoutSupported(
-    const BusesLayout &layouts) const
-{
-    return true;
-}
-
-// =============================================================
-// APPLY LEARNED STRUM
-// =============================================================
-void HumanizerAudioProcessor::applyLearnedVelocityToGroup()
-{
-    if (currentGroupEvents.size() < 2)
-        return;
-
-    const int noteCount =
-        static_cast<int>(currentGroupEvents.size());
-
-    if (noteCount > 5)
-        return;
-
-    // --------------------------------------------------------
-    // NACH TONHÖHE SORTIEREN
-    // --------------------------------------------------------
-
-    std::vector<PendingGroupNote> sortedByPitch =
-        currentGroupEvents;
-
-    std::sort(
-        sortedByPitch.begin(),
-        sortedByPitch.end(),
-        [](const PendingGroupNote &a,
-           const PendingGroupNote &b)
-        {
-            return a.message.getNoteNumber() < b.message.getNoteNumber();
-        });
-
-    // --------------------------------------------------------
-    // RICHTUNG BESTIMMEN
-    //
-    // Wir schauen, welche Note zeitlich zuerst kam.
-    // --------------------------------------------------------
-
-    int earliestIndex = 0;
-
-    int64_t earliestSample =
-        currentGroupEvents[0].originalSample;
-
-    for (int i = 1;
-         i < static_cast<int>(currentGroupEvents.size());
-         ++i)
-    {
-        if (currentGroupEvents[i].originalSample < earliestSample)
-        {
-            earliestSample =
-                currentGroupEvents[i].originalSample;
-
-            earliestIndex = i;
-        }
-    }
-
-    const int earliestNote =
-        currentGroupEvents[earliestIndex]
-            .message
-            .getNoteNumber();
-
-    const int lowestNote =
-        sortedByPitch.front()
-            .message
-            .getNoteNumber();
-
-    const int highestNote =
-        sortedByPitch.back()
-            .message
-            .getNoteNumber();
-
-    bool ascending = false;
-
-    bool descending = false;
-
-    if (earliestNote == lowestNote)
-        ascending = true;
-
-    else if (earliestNote == highestNote)
-        descending = true;
-
-    // --------------------------------------------------------
-    // PASSENDE PROFILE SUCHEN
-    // --------------------------------------------------------
-
-    std::vector<
-        const LearnedVelocityProfile *>
-        matchingProfiles;
-
-    for (int i = 0;
-         i < learnedVelocityProfileCount;
-         ++i)
-    {
-        const auto &profile =
-            learnedVelocityProfiles[i];
-
-        if (profile.noteCount != noteCount)
-            continue;
-
-        // Für den Anfang benutzen wir die vorhandenen
-        // ascending/descending Profile.
-        //
-        // Mixed wird später separat behandelt.
-        if (ascending && profile.ascending)
-        {
-            matchingProfiles.push_back(
-                &profile);
-        }
-        else if (descending && !profile.ascending)
-        {
-            matchingProfiles.push_back(
-                &profile);
-        }
-    }
-
-    // --------------------------------------------------------
-    // FALLBACK
-    // --------------------------------------------------------
-
-    if (matchingProfiles.empty())
-    {
-        for (int i = 0;
-             i < learnedVelocityProfileCount;
-             ++i)
-        {
-            const auto &profile =
-                learnedVelocityProfiles[i];
-
-            if (profile.noteCount == noteCount)
-            {
-                matchingProfiles.push_back(
-                    &profile);
-            }
-        }
-    }
-
-    if (matchingProfiles.empty())
-    {
-        return;
-    }
-
-    // --------------------------------------------------------
-    // ZUFÄLLIGES ECHTES PROFIL AUSWÄHLEN
-    // --------------------------------------------------------
-
-    const int randomIndex =
-        juce::Random::getSystemRandom()
-            .nextInt(
-                static_cast<int>(
-                    matchingProfiles.size()));
-
-    const auto *selectedProfile =
-        matchingProfiles[randomIndex];
-
-    // --------------------------------------------------------
-    // HUMANIZE STRENGTH
-    // --------------------------------------------------------
-
-    const float strength =
-        juce::jlimit(
-            0.0f,
-            1.0f,
-            velocityHumanizeAmount);
-
-    // --------------------------------------------------------
-    // DISPLAY
-    //
-    // NICHT VERÄNDERN
-    // --------------------------------------------------------
-
-    juce::String display;
-
-    display << "VELOCITY GROUP\n";
-
-    // --------------------------------------------------------
-    // ECHTES GELERNTES PROFIL ANWENDEN
-    // --------------------------------------------------------
-
-    for (int i = 0;
-         i < noteCount;
-         ++i)
-    {
-        auto &sortedEvent =
-            sortedByPitch[i];
-
-        const int noteNumber =
-            sortedEvent.message.getNoteNumber();
-
-        const int originalVelocity =
-            sortedEvent.message.getVelocity();
-
-        // ----------------------------------------------------
-        // ECHTER GELERNTER OFFSET
-        // ----------------------------------------------------
-
-        const float learnedOffset =
-            selectedProfile->offsets[i];
-
-        const float finalOffset =
-            learnedOffset * strength;
-
-        const int newVelocity =
-            juce::jlimit(
-                1,
-                127,
-                originalVelocity + static_cast<int>(
-                                       std::round(
-                                           finalOffset)));
-
-        // ----------------------------------------------------
-        // DISPLAY — NICHT ÄNDERN
-        // ----------------------------------------------------
-
-        display
-            << juce::MidiMessage::getMidiNoteName(
-                   noteNumber,
-                   true,
-                   true,
-                   4)
-            << "    "
-            << originalVelocity
-            << " -> "
-            << newVelocity
-            << "\n";
-
-        // ----------------------------------------------------
-        // NEUE NOTE
-        // ----------------------------------------------------
-
-        sortedEvent.message =
-            juce::MidiMessage::noteOn(
-                sortedEvent.message.getChannel(),
-                noteNumber,
-                static_cast<juce::uint8>(
-                    newVelocity));
-    }
-
-    // --------------------------------------------------------
-    // MODIFIZIERTE NOTEN ZURÜCKSCHREIBEN
-    // --------------------------------------------------------
-
-    for (int i = 0;
-         i < noteCount;
-         ++i)
-    {
-        const int noteNumber =
-            sortedByPitch[i]
-                .message
-                .getNoteNumber();
-
-        for (auto &originalEvent :
-             currentGroupEvents)
-        {
-            if (originalEvent.message.getNoteNumber() == noteNumber)
-            {
-                originalEvent.message =
-                    sortedByPitch[i].message;
-
-                break;
-            }
-        }
-    }
-
-    // --------------------------------------------------------
-    // GUI
-    // --------------------------------------------------------
-
-    velocityGroupDisplay =
-        display;
-
-    const juce::String displayCopy =
-        display;
-
-    juce::MessageManager::callAsync(
-        [this, displayCopy]()
-        {
-            if (auto *editor =
-                    dynamic_cast<
-                        HumanizerAudioProcessorEditor *>(
-                        getActiveEditor()))
-            {
-                editor->changeVelocityGroupText(
-                    displayCopy);
-            }
-        });
-}
-
-
-void HumanizerAudioProcessor::applyLearnedStrumToGroup()
-{
-    if (currentGroupEvents.empty())
-        return;
-
-    // =====================================================
-    // SINGLE NOTE -> PASS THROUGH
-    // =====================================================
-
-    if (currentGroupEvents.size() < 2)
-    {
-        for (const auto &event : currentGroupEvents)
-        {
-            pendingMidiEvents.push_back(
-                {event.message,
-                 event.originalSample});
-        }
-
-        for (const auto &noteOff : pendingGroupNoteOffs)
-        {
-            pendingMidiEvents.push_back(
-                {noteOff.message,
-                 noteOff.originalSample});
-        }
-
-        pendingGroupNoteOffs.clear();
-        currentGroupEvents.clear();
-
-        return;
-    }
-
-    // =====================================================
-    // LEARNED VELOCITY
-    // =====================================================
-
-    applyLearnedVelocityToGroup();
-
-    // =====================================================
-    // NOTE COUNT
-    // =====================================================
-
-    const int noteCount =
-        static_cast<int>(currentGroupEvents.size());
-
-    // Unser Modell unterstützt 2-5 Noten
-    if (noteCount > 5)
-    {
-        for (const auto &event : currentGroupEvents)
-        {
-            pendingMidiEvents.push_back(
-                {event.message,
-                 event.originalSample});
-        }
-
-        for (const auto &noteOff : pendingGroupNoteOffs)
-        {
-            pendingMidiEvents.push_back(
-                {noteOff.message,
-                 noteOff.originalSample});
-        }
-
-        pendingGroupNoteOffs.clear();
-        currentGroupEvents.clear();
-
-        return;
-    }
-
-    // =====================================================
-    // SORT BY PITCH
-    // =====================================================
-
-    std::vector<PendingGroupNote> sortedByPitch =
-        currentGroupEvents;
-
-    std::sort(
-        sortedByPitch.begin(),
-        sortedByPitch.end(),
-        [](const PendingGroupNote &a,
-           const PendingGroupNote &b)
-        {
-            return a.message.getNoteNumber() < b.message.getNoteNumber();
-        });
-
-    // =====================================================
-    // DETERMINE ORIGINAL DIRECTION
-    // =====================================================
-
-    bool ascending = true;
-
-    int64_t earliestSample =
-        sortedByPitch.front().originalSample;
-
-    int earliestIndex = 0;
-
-    for (int i = 1;
-         i < noteCount;
-         ++i)
-    {
-        if (sortedByPitch[i].originalSample < earliestSample)
-        {
-            earliestSample =
-                sortedByPitch[i].originalSample;
-
-            earliestIndex = i;
-        }
-    }
-
-    // Niedrigste Note zuerst = ascending
-    // Höchste Note zuerst = descending
-
-    if (earliestIndex == noteCount - 1)
-        ascending = false;
-
-    // =====================================================
-    // FIND MATCHING LEARNED PATTERNS
-    // =====================================================
-
-    auto &random =
-        juce::Random::getSystemRandom();
-
-    std::vector<int> matchingPatterns;
-
-    for (int i = 0;
-         i < learnedStrumPatternCount;
-         ++i)
-    {
-        const auto &pattern =
-            learnedStrumPatterns[i];
-
-        if (pattern.noteCount != noteCount)
-            continue;
-
-        // Für den Test ignorieren wir die Richtung.
-        // Wir wollen erstmal sicherstellen,
-        // dass das gelernte Timing überhaupt angewendet wird.
-        matchingPatterns.push_back(i);
-    }
-
-    // =====================================================
-    // NO MATCH -> PASS THROUGH
-    // =====================================================
-
-    if (matchingPatterns.empty())
-    {
-        for (const auto &event : currentGroupEvents)
-        {
-            pendingMidiEvents.push_back(
-                {event.message,
-                 event.originalSample});
-        }
-
-        for (const auto &noteOff : pendingGroupNoteOffs)
-        {
-            pendingMidiEvents.push_back(
-                {noteOff.message,
-                 noteOff.originalSample});
-        }
-
-        pendingGroupNoteOffs.clear();
-        currentGroupEvents.clear();
-
-        return;
-    }
-
-    // =====================================================
-    // SELECT LEARNED PATTERN
-    // =====================================================
-
-    const int selectedPatternIndex =
-        matchingPatterns[random.nextInt(
-            static_cast<int>(
-                matchingPatterns.size()))];
-
-    const auto &selectedPattern =
-        learnedStrumPatterns[selectedPatternIndex];
-
-    // =====================================================
-    // STRUM INTENSITY
-    // =====================================================
-
-    const float intensity =
-        juce::jlimit(
-            0.0f,
-            1.0f,
-            strumIntensity);
-
-    // =====================================================
-    // APPLY STRUM
-    // =====================================================
-    // =====================================================
-    // APPLY STRUM
-    // =====================================================
-
-    for (int pitchIndex = 0;
-         pitchIndex < noteCount;
-         ++pitchIndex)
-    {
-        const auto &event =
-            sortedByPitch[pitchIndex];
-
-        const float learnedBeatPosition =
-            selectedPattern.positions[pitchIndex];
-
-        // Kleine Variation der gesamten Strum-Breite
-        const float strumVariation =
-            0.85f +
-            random.nextFloat() * 0.30f;
-
-        // Kleine individuelle menschliche Abweichung
-        const float noteVariationMs =
-            (random.nextFloat() * 2.0f - 1.0f) * 1.5f * intensity;
-
-        // Gelernte Position skalieren
-        const float finalBeatPosition =
-            learnedBeatPosition * intensity * 5.0f * strumVariation;
-
-        const double strumOffsetMs =
-            static_cast<double>(
-                finalBeatPosition) *
-            beatDurationMs;
-
-        // Gelernter Strum + kleine Abweichung
-        const double finalOffsetMs =
-            strumOffsetMs +
-            noteVariationMs;
-
-        const int64_t offsetSamples =
-            static_cast<int64_t>(
-                getSampleRate() * finalOffsetMs / 1000.0);
-
-        int64_t targetSample =
-            event.originalSample +
-            offsetSamples;
-
-        targetSample =
-            juce::jmax(
-                targetSample,
-                totalSamples);
-
-        // Verschobenes Note-On
-        pendingMidiEvents.push_back(
-            {event.message,
-             targetSample});
-
-        // Timing-Shift für das zugehörige Note-Off merken
-        NoteTimingShift shift;
-
-        shift.noteNumber =
-            event.message.getNoteNumber();
-
-        shift.noteOnOriginalSample =
-            event.originalSample;
-
-        shift.offsetSamples =
-            offsetSamples;
-
-        noteTimingShifts.push_back(shift);
-    }
-
-    // =====================================================
-    // APPLY DELAYED NOTE-OFFS
-    // =====================================================
-
-    for (const auto &noteOff :
-         pendingGroupNoteOffs)
-    {
-        const int noteNumber =
-            noteOff.message.getNoteNumber();
-
-        int64_t noteOffTargetSample =
-            noteOff.originalSample;
-
-        // Passenden Note-On-Offset suchen
-        for (auto it = noteTimingShifts.begin();
-             it != noteTimingShifts.end();
-             ++it)
-        {
-            if (it->noteNumber == noteNumber)
-            {
-                noteOffTargetSample +=
-                    it->offsetSamples;
-
-                noteTimingShifts.erase(it);
-
-                break;
-            }
-        }
-
-        noteOffTargetSample =
-            juce::jmax(
-                noteOffTargetSample,
-                totalSamples);
-
-        pendingMidiEvents.push_back(
-            {noteOff.message,
-             noteOffTargetSample});
-    }
-
-    // =====================================================
-    // CLEAN UP
-    // =====================================================
-
-    pendingGroupNoteOffs.clear();
-    currentGroupEvents.clear();
+    core.requestPanic();
 }
 
 // =============================================================
@@ -735,564 +168,225 @@ void HumanizerAudioProcessor::applyLearnedStrumToGroup()
 
 void HumanizerAudioProcessor::processBlock(
     juce::AudioBuffer<float> &buffer,
-    juce::MidiBuffer &midiMessages)
+    juce::MidiBuffer &midi)
 {
     juce::ScopedNoDenormals noDenormals;
 
     buffer.clear();
 
-    // =====================================================
-    // BPM / BEAT DURATION
-    // =====================================================
+    // ---- Parameter an den Kern geben -------------------------
+    const float m = pAmount->load(); // Master skaliert alle Humanize-Regler
+    core.setStrumIntensity(pStrum->load() * m);
+    core.setVelocityAmount(pVelocity->load() * m);
+    core.setTimingAmount(pTiming->load() * m);
+    core.setAccentAmount(pAccent->load() * m);
+    core.setContourAmount(pContour->load() * m);
+    core.setGrooveAmount(pGroove->load() * m);
+    core.setLengthAmount(pLength->load() * m);
+    core.setSoftness(pSoft->load());
+    core.setBassCare(pBass->load());
+    core.setGroupWindowMs(pWindow->load());
+    core.setDirectionMode(static_cast<int>(pDirection->load() + 0.5f));
+    core.setBypass(pBypass->load() > 0.5f);
 
-    double currentBpm = 130.0;
+    // ---- Tempo, Taktposition und Taktart von der DAW ---------
+    hz::BlockInfo info;
+    double bpmForUi = 0.0;
 
     if (auto *playHead = getPlayHead())
     {
         if (auto position = playHead->getPosition())
         {
-            if (position->getBpm().hasValue() &&
-                *position->getBpm() > 0.0)
+            const auto bpm = position->getBpm();
+            const bool bpmOk = bpm.hasValue() && *bpm > 0.0;
+
+            if (bpmOk)
             {
-                currentBpm = *position->getBpm();
+                info.bpm = *bpm;
+                bpmForUi = *bpm;
+            }
+
+            // Akzente nur, wenn die Transportleiste laeuft und eine Taktposition vorliegt
+            const auto ppq = position->getPpqPosition();
+            if (bpmOk && ppq.hasValue() && position->getIsPlaying())
+            {
+                info.ppqValid = true;
+                info.ppqStart = *ppq;
+
+                const auto barStart = position->getPpqPositionOfLastBarStart();
+                info.barStartPpq = barStart.hasValue() ? *barStart : 0.0;
+
+                const auto ts = position->getTimeSignature();
+                if (ts.hasValue())
+                {
+                    info.tsNum = juce::jmax(1, ts->numerator);
+                    info.tsDen = juce::jmax(1, ts->denominator);
+                }
             }
         }
     }
 
-    beatDurationMs = 60000.0 / currentBpm;
+    hostBpm.store(bpmForUi);
 
-    // =====================================================
-    // BLOCK INFORMATION
-    // =====================================================
+    // ---- MIDI einlesen ---------------------------------------
+    int nIn = 0;
+    passthrough.clear();
 
-    const int64_t blockStartSample = totalSamples;
-    const int64_t blockEndSample =
-        totalSamples + buffer.getNumSamples();
-
-    juce::MidiBuffer outputMidi;
-
-    // =====================================================
-    // PROCESS ALREADY DELAYED EVENTS
-    // =====================================================
-
-    for (auto it = pendingMidiEvents.begin();
-         it != pendingMidiEvents.end();)
-    {
-        if (it->targetSample < blockEndSample)
-        {
-            const int samplePosition =
-                static_cast<int>(
-                    juce::jlimit<int64_t>(
-                        0,
-                        buffer.getNumSamples() - 1,
-                        it->targetSample - blockStartSample));
-
-            outputMidi.addEvent(
-                it->message,
-                samplePosition);
-
-            it = pendingMidiEvents.erase(it);
-        }
-        else
-        {
-            ++it;
-        }
-    }
-
-    // =====================================================
-    // READ INCOMING MIDI
-    // =====================================================
-
-    for (const auto metadata : midiMessages)
+    for (const auto metadata : midi)
     {
         const auto message = metadata.getMessage();
+        const int pos = metadata.samplePosition;
 
-        const int originalSamplePosition =
-            metadata.samplePosition;
+        const bool isOn = message.isNoteOn();            // Velocity 0 zaehlt hier NICHT als On
+        const bool isOff = !isOn && message.isNoteOff(); // inkl. NoteOn mit Velocity 0
 
-        const int64_t absoluteSample =
-            totalSamples + originalSamplePosition;
-
-        // =================================================
-        // NOTE ON
-        // =================================================
-
-        if (message.isNoteOn() && !message.isNoteOff())
+        if ((isOn || isOff) && nIn < hz::kMaxIn)
         {
-            const int noteNumber =
-                message.getNoteNumber();
-
-            const int velocity =
-                message.getVelocity();
-
-            // ---------------------------------------------
-            // GROUP DETECTION
-            // ---------------------------------------------
-            const int64_t groupWindowSamples =
-                static_cast<int64_t>(getSampleRate() * 0.030);
-            if (groupStartSample == -1 ||
-                absoluteSample - groupStartSample > groupWindowSamples)
-            {
-                if (!currentGroupEvents.empty())
-                {
-                    applyLearnedStrumToGroup();
-                    currentGroupEvents.clear();
-                }
-
-                groupStartSample = absoluteSample;
-                currentGroupId++;
-                currentGroupNotes.clear();
-            }
-
-            // ---------------------------------------------
-            // STORE NOTE
-            // ---------------------------------------------
-
-            PendingGroupNote groupNote;
-            groupNote.message = message;
-            groupNote.originalSample = absoluteSample;
-
-            currentGroupEvents.push_back(groupNote);
-
-            // ---------------------------------------------
-            // HELD NOTES
-            // ---------------------------------------------
-
-            if (std::find(
-                    heldNotes.begin(),
-                    heldNotes.end(),
-                    noteNumber) == heldNotes.end())
-            {
-                heldNotes.push_back(noteNumber);
-            }
-
-            // ---------------------------------------------
-            // RECENT NOTE
-            // ---------------------------------------------
-
-            RecentNote recent;
-
-            recent.noteNumber = noteNumber;
-            recent.velocity = velocity;
-            recent.samplePosition = originalSamplePosition;
-            recent.absoluteSample = absoluteSample;
-            recent.noteOffSample = -1;
-            recent.duration = 0;
-            recent.groupId =
-                static_cast<int>(currentGroupId);
-
-            recentNotes.push_back(recent);
-
-            if (recentNotes.size() > 100)
-                recentNotes.erase(
-                    recentNotes.begin());
-
-            // ---------------------------------------------
-            // NOTE + VELOCITY GUI
-            // ---------------------------------------------
-
-            const juce::String noteName =
-                juce::MidiMessage::getMidiNoteName(
-                    noteNumber,
-                    true,
-                    true,
-                    4);
-
-            juce::MessageManager::callAsync(
-                [this, noteName, velocity]()
-                {
-                    if (auto *editor =
-                            dynamic_cast<
-                                HumanizerAudioProcessorEditor *>(
-                                getActiveEditor()))
-                    {
-                        editor->changePlaceholderText(
-                            noteName);
-
-                        editor->changePlaceholderTextVelocity(
-                            juce::String(velocity));
-                    }
-                });
-
-            // ---------------------------------------------
-            // BEAT DURATION GUI
-            // ---------------------------------------------
-
-            const double currentBeatDurationMs =
-                beatDurationMs;
-
-            juce::MessageManager::callAsync(
-                [this, currentBeatDurationMs]()
-                {
-                    if (auto *editor =
-                            dynamic_cast<
-                                HumanizerAudioProcessorEditor *>(
-                                getActiveEditor()))
-                    {
-                        editor->changeBeatDurationText(
-                            juce::String(
-                                currentBeatDurationMs,
-                                1));
-                    }
-                });
-
-            // ---------------------------------------------
-            // INTERVAL
-            // ---------------------------------------------
-
-            if (recentNotes.size() >= 2)
-            {
-                const auto &previous =
-                    recentNotes[recentNotes.size() - 2];
-
-                const int interval =
-                    noteNumber -
-                    previous.noteNumber;
-
-                juce::MessageManager::callAsync(
-                    [this, interval]()
-                    {
-                        if (auto *editor =
-                                dynamic_cast<
-                                    HumanizerAudioProcessorEditor *>(
-                                    getActiveEditor()))
-                        {
-                            editor->changeIntervalText(
-                                juce::String(interval));
-                        }
-                    });
-            }
-
-            // ---------------------------------------------
-            // TIMING DEVIATION
-            // ---------------------------------------------
-
-            if (recentNotes.size() >= 2)
-            {
-                const auto &previous =
-                    recentNotes[recentNotes.size() - 2];
-
-                const double deviationMs =
-                    (absoluteSample -
-                     previous.absoluteSample) /
-                    getSampleRate() * 1000.0;
-
-                juce::MessageManager::callAsync(
-                    [this, deviationMs]()
-                    {
-                        if (auto *editor =
-                                dynamic_cast<
-                                    HumanizerAudioProcessorEditor *>(
-                                    getActiveEditor()))
-                        {
-                            editor->changeTimingDeviationText(
-                                juce::String(
-                                    deviationMs,
-                                    1));
-                        }
-                    });
-            }
-
-            // ---------------------------------------------
-            // VELOCITY DIFFERENCE
-            // ---------------------------------------------
-
-            if (recentNotes.size() >= 2)
-            {
-                const auto &previous =
-                    recentNotes[recentNotes.size() - 2];
-
-                const int velocityDifference =
-                    velocity -
-                    previous.velocity;
-
-                juce::MessageManager::callAsync(
-                    [this, velocityDifference]()
-                    {
-                        if (auto *editor =
-                                dynamic_cast<
-                                    HumanizerAudioProcessorEditor *>(
-                                    getActiveEditor()))
-                        {
-                            editor->changeVelocityDifferenceText(
-                                juce::String(
-                                    velocityDifference));
-                        }
-                    });
-            }
-
-            // ---------------------------------------------
-            // RECENT NOTES
-            // ---------------------------------------------
-
-            juce::String recentNotesText;
-
-            const int numberToShow =
-                juce::jmin(
-                    8,
-                    static_cast<int>(
-                        recentNotes.size()));
-
-            for (int i = numberToShow;
-                 i > 0;
-                 --i)
-            {
-                const auto &n =
-                    recentNotes[recentNotes.size() - i];
-
-                recentNotesText +=
-                    juce::MidiMessage::getMidiNoteName(
-                        n.noteNumber,
-                        true,
-                        true,
-                        4);
-
-                if (i > 1)
-                    recentNotesText += " ";
-            }
-
-            juce::MessageManager::callAsync(
-                [this, recentNotesText]()
-                {
-                    if (auto *editor =
-                            dynamic_cast<
-                                HumanizerAudioProcessorEditor *>(
-                                getActiveEditor()))
-                    {
-                        editor->changeRecentNotesText(
-                            recentNotesText);
-                    }
-                });
-        }
-
-        // =================================================
-        // NOTE OFF
-        // =================================================
-
-        else if (message.isNoteOff())
-        {
-            const int noteNumber =
-                message.getNoteNumber();
-
-            heldNotes.erase(
-                std::remove(
-                    heldNotes.begin(),
-                    heldNotes.end(),
-                    noteNumber),
-                heldNotes.end());
-
-            // =====================================================
-            // Gehört diese Note noch zu einer offenen Strum-Gruppe?
-            // =====================================================
-
-            bool belongsToCurrentGroup = false;
-
-            for (const auto &groupNote : currentGroupEvents)
-            {
-                if (groupNote.message.getNoteNumber() == noteNumber)
-                {
-                    belongsToCurrentGroup = true;
-                    break;
-                }
-            }
-
-            if (belongsToCurrentGroup)
-            {
-                PendingGroupNoteOff noteOff;
-
-                noteOff.message = message;
-                noteOff.originalSample = absoluteSample;
-
-                pendingGroupNoteOffs.push_back(noteOff);
-            }
-            else
-            {
-                // =================================================
-                // Note gehört zu keiner offenen Group
-                // =================================================
-
-                int64_t noteOffTargetSample =
-                    absoluteSample;
-
-                bool foundTimingShift = false;
-
-                for (auto it = noteTimingShifts.begin();
-                     it != noteTimingShifts.end();
-                     ++it)
-                {
-                    if (it->noteNumber == noteNumber)
-                    {
-                        noteOffTargetSample +=
-                            it->offsetSamples;
-
-                        noteTimingShifts.erase(it);
-
-                        foundTimingShift = true;
-                        break;
-                    }
-                }
-
-                if (!foundTimingShift)
-                {
-                    noteOffTargetSample =
-                        absoluteSample;
-                }
-
-                noteOffTargetSample =
-                    juce::jmax(
-                        noteOffTargetSample,
-                        totalSamples);
-
-                pendingMidiEvents.push_back(
-                    {message,
-                     noteOffTargetSample});
-            }
-        }
-
-        // =================================================
-        // OTHER MIDI
-        // =================================================
-
-        else
-        {
-            outputMidi.addEvent(
-                message,
-                originalSamplePosition);
-        }
-    }
-
-    // =====================================================
-    // CLOSE GROUP
-    // =====================================================
-
-    if (groupStartSample != -1 &&
-        !currentGroupEvents.empty())
-    {
-        if (blockEndSample -
-                groupStartSample >
-            900)
-        {
-            applyLearnedStrumToGroup();
-
-            {
-                // =====================================================
-                // ZURÜCKGEHALTENE NOTE-OFFS
-                // =====================================================
-
-                for (const auto &noteOff : pendingGroupNoteOffs)
-                {
-                    int64_t noteOffTargetSample =
-                        noteOff.originalSample;
-
-                    const int noteNumber =
-                        noteOff.message.getNoteNumber();
-
-                    for (const auto &shift : noteTimingShifts)
-                    {
-                        if (shift.noteNumber == noteNumber)
-                        {
-                            noteOffTargetSample +=
-                                shift.offsetSamples;
-
-                            break;
-                        }
-                    }
-
-                    noteOffTargetSample =
-                        juce::jmax(
-                            noteOffTargetSample,
-                            totalSamples);
-
-                    pendingMidiEvents.push_back(
-                        {noteOff.message,
-                         noteOffTargetSample});
-                }
-
-                pendingGroupNoteOffs.clear();
-
-                currentGroupEvents.clear();
-            }
-
-            currentGroupEvents.clear();
-
-            groupStartSample = -1;
-        }
-    }
-
-    // =====================================================
-    // ADD NEWLY GENERATED EVENTS
-    // =====================================================
-
-    for (auto it = pendingMidiEvents.begin();
-         it != pendingMidiEvents.end();)
-    {
-        if (it->targetSample < blockEndSample)
-        {
-            const int samplePosition =
-                static_cast<int>(
-                    juce::jlimit<int64_t>(
-                        0,
-                        buffer.getNumSamples() - 1,
-                        it->targetSample -
-                            blockStartSample));
-
-            outputMidi.addEvent(
-                it->message,
-                samplePosition);
-
-            it = pendingMidiEvents.erase(it);
+            hz::NoteEvent e;
+            e.pos = pos;
+            e.on = isOn;
+            e.ch = static_cast<uint8_t>(juce::jlimit(1, 16, message.getChannel()) - 1);
+            e.note = static_cast<uint8_t>(message.getNoteNumber() & 127);
+            e.vel = static_cast<uint8_t>(message.getVelocity() & 127);
+            inBuf[static_cast<size_t>(nIn++)] = e;
         }
         else
         {
-            ++it;
+            // CC, Pitchbend, Sysex ... laufen unveraendert durch.
+            // Auch der seltene Fall von >2048 Noten-Events pro Block landet hier.
+            if (message.isAllNotesOff() || message.isAllSoundOff())
+                core.requestPanic();
+
+            passthrough.emplace_back(message, pos);
         }
     }
 
-    // =====================================================
-    // OUTPUT
-    // =====================================================
+    // ---- Humanizen -------------------------------------------
+    const int nOut = core.process(inBuf.data(), nIn, buffer.getNumSamples(), info);
 
-    midiMessages.swapWith(outputMidi);
+    // ---- MIDI ausgeben ---------------------------------------
+    midi.clear();
 
-    totalSamples += buffer.getNumSamples();
-}
-bool HumanizerAudioProcessor::hasEditor() const
-{
-    return true;
-}
-juce::String HumanizerAudioProcessor::getVelocityGroupDisplay() const
-{
-    return velocityGroupDisplay;
-}
-juce::AudioProcessorEditor *
-HumanizerAudioProcessor::createEditor()
-{
-    return new HumanizerAudioProcessorEditor(
-        *this);
+    for (const auto &p : passthrough)
+        midi.addEvent(p.first, p.second);
+
+    const hz::NoteEvent *out = core.output();
+    for (int i = 0; i < nOut; ++i)
+    {
+        const auto &e = out[i];
+        const int channel = static_cast<int>(e.ch) + 1;
+
+        if (e.on)
+            midi.addEvent(juce::MidiMessage::noteOn(channel, static_cast<int>(e.note), static_cast<juce::uint8>(e.vel)), e.pos);
+        else
+            midi.addEvent(juce::MidiMessage::noteOff(channel, static_cast<int>(e.note), static_cast<juce::uint8>(e.vel)), e.pos);
+    }
 }
 
 // =============================================================
-// STATE
+// ANZEIGE (Message-Thread, 30 Hz)
 // =============================================================
 
-void HumanizerAudioProcessor::getStateInformation(
-    juce::MemoryBlock &destData)
+void HumanizerAudioProcessor::timerCallback()
 {
+    auto *editor = dynamic_cast<HumanizerAudioProcessorEditor *>(getActiveEditor());
+
+    // ---- neue Noten ------------------------------------------
+    hz::NoteInfo info;
+    hz::NoteInfo prev;
+    hz::NoteInfo last;
+    bool anyNote = false;
+    bool havePrev = false;
+
+    while (core.popNoteInfo(info))
+    {
+        havePrev = !recentNotes.empty();
+        if (havePrev)
+            prev = recentNotes.back();
+
+        recentNotes.push_back(info);
+        if (recentNotes.size() > 8)
+            recentNotes.erase(recentNotes.begin());
+
+        last = info;
+        anyNote = true;
+    }
+
+    bool changed = false;
+
+    if (anyNote)
+    {
+        monitor.lastNote = juce::MidiMessage::getMidiNoteName(last.note, true, true, 4);
+        monitor.lastVelocity = juce::String(static_cast<int>(last.vel));
+
+        if (havePrev)
+        {
+            monitor.interval = juce::String(static_cast<int>(last.note) - static_cast<int>(prev.note));
+
+            const double sr = getSampleRate();
+            const double deviationMs =
+                sr > 0.0 ? static_cast<double>(last.absSample - prev.absSample) / sr * 1000.0 : 0.0;
+            monitor.deltaMs = juce::String(deviationMs, 1);
+
+            monitor.deltaVelocity = juce::String(static_cast<int>(last.vel) - static_cast<int>(prev.vel));
+        }
+
+        juce::String recentText;
+        for (size_t i = 0; i < recentNotes.size(); ++i)
+        {
+            recentText += juce::MidiMessage::getMidiNoteName(recentNotes[i].note, true, true, 4);
+            if (i + 1 < recentNotes.size())
+                recentText += "  ";
+        }
+        monitor.recent = recentText;
+        changed = true;
+    }
+
+    const double bpm = hostBpm.load();
+    if (std::abs(bpm - shownBpm) > 0.05)
+    {
+        shownBpm = bpm;
+        monitor.bpm = bpm;
+        changed = true;
+    }
+
+    if (changed && editor != nullptr)
+        editor->setMonitor(monitor);
+
+    // ---- humanisierte Gruppen --------------------------------
+    hz::GroupReport rep;
+    bool anyGroup = false;
+
+    while (core.popGroupReport(rep))
+        anyGroup = true; // nur die letzte zeigen
+
+    if (anyGroup && editor != nullptr)
+        editor->showGroup(rep);
 }
 
-void HumanizerAudioProcessor::setStateInformation(
-    const void *data,
-    int sizeInBytes)
+// =============================================================
+// STATE (alle Parameter werden mit dem Projekt gespeichert)
+// =============================================================
+
+void HumanizerAudioProcessor::getStateInformation(juce::MemoryBlock &destData)
 {
+    auto state = apvts.copyState();
+    if (auto xml = state.createXml())
+        copyXmlToBinary(*xml, destData);
+}
+
+void HumanizerAudioProcessor::setStateInformation(const void *data, int sizeInBytes)
+{
+    if (auto xml = getXmlFromBinary(data, sizeInBytes))
+        if (xml->hasTagName(apvts.state.getType()))
+            apvts.replaceState(juce::ValueTree::fromXml(*xml));
 }
 
 // =============================================================
 // PLUGIN CREATOR
 // =============================================================
 
-juce::AudioProcessor *
-    JUCE_CALLTYPE
-    createPluginFilter()
+juce::AudioProcessor *JUCE_CALLTYPE createPluginFilter()
 {
     return new HumanizerAudioProcessor();
 }
